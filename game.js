@@ -243,7 +243,35 @@
     };
   }
 
+  // מפעיל פעולה של שחקן על המצב. משותף למארח P2P ולשרת. מחזיר {err} או {ok[, kicked, left]}
+  function applyAction(s, pid, m, words, rng) {
+    if (!m || typeof m !== 'object' || !s.players[pid]) return { err: 'פעולה לא מוכרת' };
+    var isHost = pid === s.hostPid;
+    switch (m.t) {
+      case 'team': return setTeam(s, pid, m.team);
+      case 'role': return setRole(s, pid, m.role);
+      case 'clue': return giveClue(s, pid, m.word, m.num);
+      case 'guess': return guess(s, pid, m.idx);
+      case 'end': return endTurn(s, pid);
+      case 'rename': return addPlayer(s, pid, m.name, rng);
+      case 'start': return isHost ? startGame(s, words, rng) : { err: 'רק המארח יכול להתחיל' };
+      case 'again': return isHost ? toLobby(s) : { err: 'רק המארח יכול להתחיל משחק חדש' };
+      case 'kick':
+        if (!isHost) return { err: 'רק המארח יכול להסיר שחקנים' };
+        var target = pidBySid(s, m.sid);
+        if (!target || target === s.hostPid) return { err: 'שחקן לא נמצא' };
+        removePlayer(s, target);
+        return { ok: true, kicked: target };
+      case 'leave':
+        if (isHost) return { err: 'המארח לא יכול לצאת (אפשר לסגור את המשחק)' };
+        if (s.phase === 'lobby') removePlayer(s, pid);
+        return { ok: true, left: true };
+    }
+    return { err: 'פעולה לא מוכרת' };
+  }
+
   var api = {
+    applyAction: applyAction,
     MAX_PLAYERS: MAX_PLAYERS, other: other, shuffle: shuffle, rid: rid, clean: clean,
     newState: newState, addPlayer: addPlayer, removePlayer: removePlayer, pidBySid: pidBySid,
     setTeam: setTeam, setRole: setRole, startCheck: startCheck, startGame: startGame, toLobby: toLobby,

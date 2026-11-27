@@ -54,7 +54,8 @@
   var me = load('sk_me');
   if (!me || !me.pid) { me = { pid: G.rid(32, secureRng), name: '' }; save('sk_me', me); }
   var session = load('sk_session');
-  var mode = null;            // 'host' | 'client' | null
+  var mode = null;            // 'host' | 'client' (P2P) | 'server' (אירוח על שרת) | null
+  var SRV = false, es = null;  // SRV: האתר מוגש מ-server.js
   var hs = null;              // מצב מלא (מארח בלבד)
   var view = null;            // מה שהשחקן הנוכחי רואה
   var net = 'connecting';     // connecting | online | reconnecting | notfound
@@ -164,38 +165,15 @@
 
   function handleAction(pid, m) {
     if (!hs || !m) return;
-    var isHost = pid === hs.hostPid, r = { err: 'פעולה לא מוכרת' };
-    switch (m.t) {
-      case 'team': r = G.setTeam(hs, pid, m.team); break;
-      case 'role': r = G.setRole(hs, pid, m.role); break;
-      case 'clue': r = G.giveClue(hs, pid, m.word, m.num); break;
-      case 'guess': r = G.guess(hs, pid, m.idx); break;
-      case 'end': r = G.endTurn(hs, pid); break;
-      case 'rename': r = G.addPlayer(hs, pid, m.name); break;
-      case 'start': r = isHost ? G.startGame(hs, WORDS, secureRng) : { err: 'רק המארח יכול להתחיל' }; break;
-      case 'again': r = isHost ? G.toLobby(hs) : { err: 'רק המארח יכול להתחיל משחק חדש' }; break;
-      case 'kick':
-        if (!isHost) { r = { err: 'רק המארח יכול להסיר שחקנים' }; break; }
-        var target = G.pidBySid(hs, m.sid);
-        if (target && target !== hs.hostPid) {
-          safeSend(conns[target], { t: 'kicked' });
-          var kc = conns[target];
-          G.removePlayer(hs, target);
-          if (kc) setTimeout(function () { try { kc.close(); } catch (e) {} }, 300);
-          delete conns[target];
-          r = { ok: true };
-        } else r = { err: 'שחקן לא נמצא' };
-        break;
-      case 'leave':
-        if (!isHost) {
-          if (hs.phase === 'lobby') G.removePlayer(hs, pid);
-          var lc = conns[pid]; delete conns[pid];
-          if (lc) setTimeout(function () { try { lc.close(); } catch (e) {} }, 200);
-          persistAndBroadcast();
-        }
-        return;
+    var r = G.applyAction(hs, pid, m, WORDS, secureRng);
+    if (r.err) { toastTo(pid, r.err); return; }
+    var c = conns[pid];
+    if (r.kicked) {
+      var kc = conns[r.kicked]; delete conns[r.kicked];
+      if (kc) { safeSend(kc, { t: 'kicked' }); setTimeout(function () { try { kc.close(); } catch (e) {} }, 300); }
     }
-    if (r.err) toastTo(pid, r.err); else persistAndBroadcast();
+    if (r.left) { delete conns[pid]; if (c) setTimeout(function () { try { c.close(); } catch (e) {} }, 200); }
+    persistAndBroadcast();
   }
 
   function startWatch() {
@@ -293,15 +271,59 @@
   function endSession(msg) { del('sk_session'); session = null; goHome(); if (msg) toast(msg); }
 
   function leave() {
+    if (mode === 'server') {
+      var iAmHost = view && view.you === view.hostSid;
+      if (iAmHost) { if (confirm('לסגור את המשחק לכולם?')) api('act', { code: joinCode, pid: me.pid }, { t: 'close' }).then(function () { endSession(); }); return; }
+      if (!confirm('לצאת מהמשחק?')) return;
+      api('act', { code: joinCode, pid: me.pid }, { t: 'leave' }).catch(function () {}).then(function () { endSession(); });
+      return;
+    }
     if (mode === 'host') { if (confirm('לסגור את המשחק לכולם?')) closeRoom(); return; }
     if (!confirm('לצאת מהמשחק?')) return;
     safeSend(clientConn, { t: 'leave' });
     setTimeout(function () { endSession(); }, 150);
   }
 
+  // ---------- מצב שרת (server.js) ----------
+  function api(path, q, body) {
+    var url = 'api/' + path + (q ? '?' + new URLSearchParams(q).toString() : '');
+    return fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) })
+      .then(function (r) { return r.json(); });
+  }
+
+  function srvCreate(name) {
+    me.name = name; save('sk_me', me);
+    api('create', null, { pid: me.pid, name: name }).then(function (j) {
+      if (j.err) return toast(j.err);
+      session = { role: 'srv', code: j.code }; saveSession(); srvOpen(j.code);
+    }).catch(function () { toast('השרת לא זמין'); });
+  }
+
+  function srvJoin(name, code) {
+    me.name = name; save('sk_me', me);
+    session = { role: 'srv', code: code }; saveSession(); srvOpen(code);
+  }
+
+  function srvOpen(code) {
+    var same = joinCode === code && view;
+    destroyPeer();
+    mode = 'server'; joinCode = code; if (!same) view = null; net = view ? 'reconnecting' : 'connecting';
+    render(); wake();
+    var e = new EventSource('api/events?' + new URLSearchParams({ code: code, pid: me.pid, name: me.name || '' }).toString());
+    es = e;
+    e.onopen = function () { if (es === e) { net = 'online'; render(); } };
+    e.onerror = function () { if (es === e) { net = view ? 'reconnecting' : 'connecting'; render(); } };
+    e.addEventListener('state', function (ev) { if (es !== e) return; view = JSON.parse(ev.data); net = 'online'; render(); });
+    e.addEventListener('toast', function (ev) { toast(JSON.parse(ev.data).msg); });
+    e.addEventListener('kicked', function () { if (es === e) endSession('הוסרת מהמשחק'); });
+    e.addEventListener('closed', function () { if (es === e) endSession('המשחק נסגר'); });
+    e.addEventListener('fatal', function (ev) { if (es === e) endSession(JSON.parse(ev.data).msg || 'לא ניתן להצטרף'); });
+  }
+
   // ---------- כללי ----------
   function destroyPeer(keepMode) {
     clearTimeout(dialT); clearInterval(pingI); clearInterval(watchI);
+    if (es) { try { es.close(); } catch (e) {} es = null; }
     var p = peer; peer = null;
     if (p) { try { p.destroy(); } catch (e) {} }
     conns = {}; lastSeen = {}; clientConn = null;
@@ -313,7 +335,9 @@
   }
 
   function act(m) {
-    if (mode === 'host') handleAction(me.pid, m);
+    if (mode === 'server') {
+      api('act', { code: joinCode, pid: me.pid }, m).then(function (j) { if (j && j.err) toast(j.err); }).catch(function () { toast('אין חיבור לשרת'); });
+    } else if (mode === 'host') handleAction(me.pid, m);
     else if (clientConn && clientConn.open) safeSend(clientConn, m);
     else toast('אין חיבור למארח');
   }
@@ -329,6 +353,7 @@
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState !== 'visible') return;
     wake();
+    if (mode === 'server') { if (!es || es.readyState === 2) srvOpen(joinCode); return; }
     if (mode === 'host' && peer) {
       if (peer.destroyed) hostOpen(hs.code);
       else if (peer.disconnected) { try { peer.reconnect(); } catch (e) {} }
@@ -362,7 +387,8 @@
 
   function statusChip() {
     var txt, cls = '';
-    if (net === 'online') txt = mode === 'host' ? 'מארח · ' + (Object.keys(conns).length + 1) + ' מחוברים' : 'מחובר';
+    if (net === 'online' && mode === 'server') txt = 'מחובר · ' + view.players.filter(function (p) { return p.online; }).length + ' מחוברים';
+    else if (net === 'online') txt = mode === 'host' ? 'מארח · ' + (Object.keys(conns).length + 1) + ' מחוברים' : 'מחובר';
     else if (net === 'reconnecting') { txt = 'מתחבר מחדש…'; cls = 'warn'; }
     else if (net === 'notfound') { txt = 'המארח לא נמצא'; cls = 'bad'; }
     else { txt = 'מתחבר…'; cls = 'warn'; }
@@ -370,7 +396,7 @@
   }
 
   function homeScreen() {
-    var saved = session && ((session.role === 'host' && load('sk_host')) || session.role === 'client') ? session : null;
+    var saved = session && ((SRV && session.role === 'srv') || (!SRV && ((session.role === 'host' && load('sk_host')) || session.role === 'client'))) ? session : null;
     return h('div', { class: 'home' },
       h('div', { class: 'logo' },
         h('div', { class: 'title' }, h('b', null, 'שם'), ' ', h('i', null, 'קוד')),
@@ -379,7 +405,8 @@
         h('h3', null, saved.role === 'host' ? 'יש לך משחק פתוח כמארח' : 'חזרה למשחק שהצטרפת אליו'),
         h('div', { class: 'row' },
           h('button', { onclick: function () {
-            if (saved.role === 'host') { hs = load('sk_host').state; resuming = true; resumeTries = 0; hostOpen(saved.code); }
+            if (saved.role === 'srv') srvOpen(saved.code);
+            else if (saved.role === 'host') { hs = load('sk_host').state; resuming = true; resumeTries = 0; hostOpen(saved.code); }
             else clientOpen(saved.code);
           } }, 'המשך · ' + saved.code),
           h('button', { class: 'ghost fit', onclick: function () { if (confirm('למחוק את המשחק השמור?')) { del('sk_host'); del('sk_session'); session = null; render(); } } }, 'מחק'))),
@@ -391,9 +418,9 @@
         h('h3', null, 'משחק חדש'),
         h('button', { onclick: function () {
           var n = G.clean(draft.name); if (!n) return toast('כתוב קודם את השם שלך');
-          hostNew(n);
+          if (SRV) srvCreate(n); else hostNew(n);
         } }, 'פתח משחק (אני המארח)'),
-        h('div', { class: 'note' }, 'הטלפון שלך מנהל את המשחק. כדאי להשאיר את המסך דלוק ואת הדף פתוח.')),
+        h('div', { class: 'note' }, SRV ? 'המשחק רץ ונשמר על השרת הביתי, אז אפשר לסגור את הדף ולחזור בכל רגע.' : 'הטלפון שלך מנהל את המשחק. כדאי להשאיר את המסך דלוק ואת הדף פתוח.')),
       h('div', { class: 'panel' },
         h('h3', null, 'הצטרפות למשחק'),
         h('input', { type: 'text', id: 'in-code', class: 'code', maxlength: '4', placeholder: 'קוד', value: draft.code, autocomplete: 'off', autocapitalize: 'characters',
@@ -401,7 +428,7 @@
         h('button', { class: 'ghost', onclick: function () {
           var n = G.clean(draft.name); if (!n) return toast('כתוב קודם את השם שלך');
           if (draft.code.length !== 4) return toast('הקוד הוא 4 תווים');
-          joinNew(n, draft.code);
+          if (SRV) srvJoin(n, draft.code); else joinNew(n, draft.code);
         } }, 'הצטרף')));
   }
 
@@ -561,15 +588,26 @@
   window.__sk = function () { return { mode: mode, net: net, peerId: peer && peer.id, open: peer && peer.open, disc: peer && peer.disconnected, conns: Object.keys(conns).length, dial: clientConn && clientConn.open }; };
 
   // ---------- אתחול ----------
-  (function boot() {
+  function boot() {
     var saved = session;
-    if (saved && saved.role === 'host') {
+    if (SRV && saved && saved.role === 'srv' && (!joinParam || joinParam === saved.code)) { srvOpen(saved.code); return; }
+    if (!SRV && saved && saved.role === 'host') {
       var hsave = load('sk_host');
       if (hsave && hsave.state && hsave.code === saved.code && (!joinParam || joinParam === saved.code)) {
         hs = hsave.state; resuming = true; hostOpen(saved.code); return;
       }
     }
-    if (saved && saved.role === 'client' && (!joinParam || joinParam === saved.code)) { clientOpen(saved.code); return; }
+    if (!SRV && saved && saved.role === 'client' && (!joinParam || joinParam === saved.code)) { clientOpen(saved.code); return; }
     render();
+  }
+  // האם האתר מוגש משרת שם קוד? (ב-GitHub Pages אין /api ולכן נשארים במצב P2P)
+  (function detect() {
+    var ac = window.AbortController ? new AbortController() : null;
+    var t = setTimeout(function () { if (ac) ac.abort(); }, 2500);
+    fetch('api/ping', { cache: 'no-store', signal: ac ? ac.signal : undefined })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { SRV = !!(j && j.shemkod); })
+      .catch(function () {})
+      .then(function () { clearTimeout(t); boot(); });
   })();
 })();

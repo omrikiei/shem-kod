@@ -7,14 +7,23 @@
 - מפתח הקלפים נשלח רק לראשי המרגלים, כך שסוכנים לא יכולים לרמות דרך כלי המפתחים.
 - אם המארח מרענן או סוגר את הדף, המשחק משוחזר והשחקנים מתחברים מחדש אוטומטית.
 
+## שני מצבי אירוח
+1. **GitHub Pages (P2P):** המארח הוא טלפון, כמתואר למעלה. אין שרת.
+2. **שרת ביתי (Mac mini + Tailscale):** `node server.js` (בלי תלויות). האתר ומצב המשחק נשמרים על המחשב (`~/.shem-kod/rooms.json`), כולם מתחברים לאותה כתובת, ואף אחד לא צריך להשאיר דף פתוח. השרת מאזין רק ל-localhost ולכתובת ה-Tailscale (100.x), לא לרשת הביתית.
+   - הרצה: `PORT=8787 node server.js` ← `http://<כתובת-Tailscale>:8787`
+   - הפעלה אוטומטית עם הכניסה למחשב: `sh deploy/install-macos.sh` (במסוף רגיל)
+   - הדף מזהה לבד אם הוא מוגש משרת (`/api/ping`) ובוחר מצב.
+
 ## קבצים
+- `server.js` – שרת אירוח ביתי (HTTP + SSE) · `deploy/` – התקנה כשירות
 - `game.js` – מנוע המשחק (לוגיקה טהורה) · `words.js` – רשימת מילים
 - `app.js` – ממשק ורשת · `style.css` · `index.html` · `vendor/peerjs.min.js`
 
 ## בדיקות
 ```
 node test/game.test.js          # מנוע המשחק
-node test/e2e.js [URL]          # 4 שחקנים בדפדפן אמיתי (playwright-core + Chrome)
+node test/e2e.js [URL]          # 4 שחקנים בדפדפן אמיתי (playwright-core + Chrome), P2P או שרת
+node test/e2e-server-restart.js # המצב שורד הפעלה מחדש של השרת
 ```
 
 ## הגבלות
