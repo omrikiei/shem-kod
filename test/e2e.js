@@ -92,6 +92,7 @@ const btn = (page, txt) => page.locator('button', { hasText: txt }).first();
   await ag.page.screenshot({ path: OUT + '/sk-agent-confirm.png' });
   await btn(ag.page, 'כן, לחשוף').click();
   await host.page.waitForSelector('.cell.rev', { timeout: 10000 });
+  assert((await host.page.locator('.cell.just').count()) >= 1, 'אין אנימציית חשיפה (just)');
   await spy.page.screenshot({ path: OUT + '/sk-spy.png' });
   await ag.page.screenshot({ path: OUT + '/sk-agent.png' });
   console.log('ניחוש נכון נחשף אצל כולם ✓');

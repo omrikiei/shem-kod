@@ -64,6 +64,7 @@
   var sel = null;
   var draft = { name: me.name || '', code: '', clue: '', num: '1' };
   var wl = null;
+  var lastView = null, revSeen = null, justAt = {};
 
   var params = new URLSearchParams(location.search);
   var joinParam = cleanCode(params.get('join'));
@@ -379,6 +380,11 @@
     else screen = gameScreen();
     app.textContent = '';
     app.appendChild(screen);
+    var prevV = lastView;
+    if (view !== lastView) lastView = view;
+    if (view && view.phase !== 'lobby') revSeen = { code: view.code, round: view.round, rev: view.board.map(function (c) { return c.rev; }) };
+    else revSeen = null;
+    if (window.SKFX && view && prevV !== view) { try { window.SKFX.onRender(view, prevV); } catch (e) {} }
     if (focusId) {
       var el = document.getElementById(focusId);
       if (el) { el.focus(); if (selStart && el.setSelectionRange) { try { el.setSelectionRange(selStart[0], selStart[1]); } catch (e) {} } }
@@ -393,6 +399,12 @@
     else if (net === 'notfound') { txt = 'המארח לא נמצא'; cls = 'bad'; }
     else { txt = 'מתחבר…'; cls = 'warn'; }
     return h('span', { class: 'chip ' + cls }, h('span', { class: 'dot' }), txt);
+  }
+
+  function altLink() {
+    var to = document.body.getAttribute('data-alt'), label = document.body.getAttribute('data-alt-label');
+    if (!to) return null;
+    return h('a', { class: 'alt', href: to + location.search }, label);
   }
 
   function homeScreen() {
@@ -429,7 +441,8 @@
           var n = G.clean(draft.name); if (!n) return toast('כתוב קודם את השם שלך');
           if (draft.code.length !== 4) return toast('הקוד הוא 4 תווים');
           if (SRV) srvJoin(n, draft.code); else joinNew(n, draft.code);
-        } }, 'הצטרף')));
+        } }, 'הצטרף')),
+      altLink());
   }
 
   function connectingScreen() {
@@ -527,7 +540,11 @@
       if (c.rev) cls += ' rev ' + c.c; else if (c.c) cls += ' hint ' + c.c;
       if (sel === i) cls += ' sel';
       var mk = { red: '▲', blue: '●', assassin: '☠' }[c.c];
-      return h('div', { class: cls, onclick: function () { if (canGuess && !c.rev) { sel = i; render(); } } },
+      var st = null;
+      if (c.rev && revSeen && revSeen.code === view.code && revSeen.round === view.round && revSeen.rev[i] === false) justAt[i] = Date.now();
+      if (c.rev && justAt[i] && Date.now() - justAt[i] < 900) { cls += ' just'; st = 'animation-delay:-' + (Date.now() - justAt[i]) + 'ms'; }
+      if (!c.rev) delete justAt[i];
+      return h('div', { class: cls, style: st, onclick: function () { if (canGuess && !c.rev) { sel = i; render(); } } },
         !c.rev && c.c && mk ? h('span', { class: 'mk' }, mk) : null,
         h('span', null, c.w));
     }));

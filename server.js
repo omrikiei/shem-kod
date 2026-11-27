@@ -23,6 +23,9 @@ const STATIC = {
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
   '/game.js': ['game.js', 'text/javascript; charset=utf-8'],
   '/words.js': ['words.js', 'text/javascript; charset=utf-8'],
+  '/spy.html': ['spy.html', 'text/html; charset=utf-8'],
+  '/theme-spy.css': ['theme-spy.css', 'text/css; charset=utf-8'],
+  '/fx.js': ['fx.js', 'text/javascript; charset=utf-8'],
   '/vendor/peerjs.min.js': ['vendor/peerjs.min.js', 'text/javascript; charset=utf-8']
 };
 
